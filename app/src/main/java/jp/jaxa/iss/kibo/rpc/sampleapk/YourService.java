@@ -16,8 +16,10 @@ import java.util.Map;
 
 import org.opencv.aruco.Aruco;
 import org.opencv.aruco.Dictionary;
+import org.opencv.calib3d.Calib3d;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
+import org.opencv.imgproc.Imgproc;
 
 /**
  * Class meant to handle commands from the Ground Data System and execute them in Astrobee.
@@ -25,12 +27,12 @@ import org.opencv.core.Mat;
 
 public class YourService extends KiboRpcService {
 
-    private final String TAG = this.getClass().getSimpleName();
+    //private final String TAG = this.getClass().getSimpleName();
 
     @Override
     protected void runPlan1() {
         //Logging code following JAXA tutorial video
-        Log.i(TAG, "MISSION START");
+        Log.i("[KIBO-DIVERS]", "=== KIBO-DIVERS::MISSION START ===");
 
         api.startMission();
 
@@ -38,7 +40,9 @@ public class YourService extends KiboRpcService {
         Map<String, Integer> itemLocationMap = new HashMap<>();
 
         // === Area 1 ===
+        Log.i("[KIBO-DIVERS]", "Moving to Target 1");
         moveToWithRetry(new Point(10.95, -10.58, 5.20), quat(-0.707f, 0.707f));
+        capture(1);
         recordItem(itemLocationMap, 1, "shell", 1);
         api.setAreaInfo(1, "shell", 1);
 
@@ -133,14 +137,36 @@ public class YourService extends KiboRpcService {
     private void capture(int area_num) {
         // capture image
         Mat nav_img = api.getMatNavCam();
-        api.saveMatImage(nav_img, String.format(Locale.ENGLISH, "area_%d.png", area_num));
+        api.saveMatImage(nav_img, "raw_area"+area_num+".png");
+
+        // undistort camera view
+        double[][] cameraParams = api.getNavCamIntrinsics();
+        Mat undistort = new Mat();
+        Mat camMtx = new Mat();
+        Mat distMtx = new Mat();
+        camMtx.put(0, 0, cameraParams[0]);
+        distMtx.put(0, 0, cameraParams[1]);
+        Calib3d.undistort(nav_img, undistort, camMtx, distMtx);
+
+        // sharpen image
+        Mat kernel = new Mat();
+        kernel.put(0, 0, 0);
+        kernel.put(0, 1, -1);
+        kernel.put(0, 2, 0);
+        kernel.put(1, 0, -1);
+        kernel.put(1, 1, 5);
+        kernel.put(1, 2, -1);
+        kernel.put(2, 0, 0);
+        kernel.put(2, 1, -1);
+        kernel.put(2, 2, 0);
+
+        Mat sharpened = new Mat();
+        Imgproc.filter2D(undistort, sharpened, -1, kernel);
 
         // AR tag detection
         Dictionary dict = Aruco.getPredefinedDictionary(Aruco.DICT_5X5_250);
         List<Mat> corners = new ArrayList<>();
         Mat markerIds = new Mat();
         Aruco.detectMarkers(nav_img, dict, corners, markerIds);
-
-        // TODO: camera distortion stuff, check tutorial and 5th-KIBO code
     }
 }
