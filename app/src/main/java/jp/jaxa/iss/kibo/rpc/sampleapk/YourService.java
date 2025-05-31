@@ -135,10 +135,20 @@ public class YourService extends KiboRpcService {
     }
 
     private void capture(int area_num) {
+        Mat orig = navCapture(area_num);
+        Mat undist = undistort(orig);
+        Mat sharp = sharpenImg(undist);
+        AR_process(sharp);
+    }
+
+    private Mat navCapture(int area_num) {
         // capture image
         Mat nav_img = api.getMatNavCam();
         api.saveMatImage(nav_img, "raw_area"+area_num+".png");
+        return nav_img;
+    }
 
+    private Mat undistort(Mat img) {
         // undistort camera view
         double[][] cameraParams = api.getNavCamIntrinsics();
         Mat undistort = new Mat();
@@ -146,8 +156,11 @@ public class YourService extends KiboRpcService {
         Mat distMtx = new Mat();
         camMtx.put(0, 0, cameraParams[0]);
         distMtx.put(0, 0, cameraParams[1]);
-        Calib3d.undistort(nav_img, undistort, camMtx, distMtx);
+        Calib3d.undistort(img, undistort, camMtx, distMtx);
+        return undistort;
+    }
 
+    private Mat sharpenImg(Mat img) {
         // sharpen image
         Mat kernel = new Mat();
         kernel.put(0, 0, 0);
@@ -161,12 +174,23 @@ public class YourService extends KiboRpcService {
         kernel.put(2, 2, 0);
 
         Mat sharpened = new Mat();
-        Imgproc.filter2D(undistort, sharpened, -1, kernel);
+        Imgproc.filter2D(img, sharpened, -1, kernel);
+        return sharpened;
+    }
 
+    private void AR_process(Mat img) {
         // AR tag detection
         Dictionary dict = Aruco.getPredefinedDictionary(Aruco.DICT_5X5_250);
         List<Mat> corners = new ArrayList<>();
         Mat markerIds = new Mat();
-        Aruco.detectMarkers(nav_img, dict, corners, markerIds);
+        Aruco.detectMarkers(img, dict, corners, markerIds);
+        Log.i("[KIBO-DIVERS]", "Marker ID count: " + markerIds.rows());
+
+        //cropping out the image
+        boolean cropped = false;
+        if (!corners.isEmpty() && !cropped) {
+            float markerLength = 0.05f; //AR tags are 0.05m in length
+
+        }
     }
 }
