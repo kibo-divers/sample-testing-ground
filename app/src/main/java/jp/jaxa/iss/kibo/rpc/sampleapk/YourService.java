@@ -1,14 +1,22 @@
 package jp.jaxa.iss.kibo.rpc.sampleapk;
 
+import android.util.Log;
+
 import gov.nasa.arc.astrobee.Result;
 import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
 
 import gov.nasa.arc.astrobee.types.Point;
 import gov.nasa.arc.astrobee.types.Quaternion;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
+import org.opencv.aruco.Aruco;
+import org.opencv.aruco.Dictionary;
+import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 
 /**
@@ -16,8 +24,14 @@ import org.opencv.core.Mat;
  */
 
 public class YourService extends KiboRpcService {
+
+    private final String TAG = this.getClass().getSimpleName();
+
     @Override
     protected void runPlan1() {
+        //Logging code following JAXA tutorial video
+        Log.i(TAG, "MISSION START");
+
         api.startMission();
 
         // === Item memory ===
@@ -114,5 +128,19 @@ public class YourService extends KiboRpcService {
 
     private Quaternion quat(float z, float w) {
         return new Quaternion(0f, 0f, z, w);
+    }
+
+    private void capture(int area_num) {
+        // capture image
+        Mat nav_img = api.getMatNavCam();
+        api.saveMatImage(nav_img, String.format(Locale.ENGLISH, "area_%d.png", area_num));
+
+        // AR tag detection
+        Dictionary dict = Aruco.getPredefinedDictionary(Aruco.DICT_5X5_250);
+        List<Mat> corners = new ArrayList<>();
+        Mat markerIds = new Mat();
+        Aruco.detectMarkers(nav_img, dict, corners, markerIds);
+
+        // TODO: camera distortion stuff, check tutorial and 5th-KIBO code
     }
 }
