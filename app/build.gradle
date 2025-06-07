@@ -35,6 +35,9 @@ android {
         exclude 'META-INF/dependencies.txt'
         exclude 'META-INF/LGPL2.1'
     }
+    aaptOptions {
+        noCompress "tflite"
+    }
 }
 
 dependencies {
@@ -42,6 +45,9 @@ dependencies {
     implementation project(':kibo_rpc_api')
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation 'com.android.support:appcompat-v7:26.+'
+    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+    implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
+    implementation 'org.tensorflow:tensorflow-lite-gpu:2.14.0'
     implementation 'com.android.support.constraint:constraint-layout:1.0.2'
     implementation('org.ros.rosjava_core:rosjava:[0.2,0.3)') {
         exclude group: 'xml-apis'

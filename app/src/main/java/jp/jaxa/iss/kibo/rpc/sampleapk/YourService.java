@@ -1,6 +1,16 @@
 package jp.jaxa.iss.kibo.rpc.sampleapk;
+import android.content.res.AssetFileDescriptor;
+import android.util.Log;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+
+import org.opencv.android.Utils;
+import android.graphics.Bitmap;
 
 import android.util.Log;
+import org.tensorflow.lite.Interpreter;
 
 import gov.nasa.arc.astrobee.Result;
 import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
@@ -22,14 +32,16 @@ import org.opencv.calib3d.Calib3d;
 import org.opencv.imgproc.Imgproc;
 
 public class YourService extends KiboRpcService {
-
+    private Interpreter tflite;
     private final int AREA_COUNT = 4;
     private Map<String, Integer> itemLocationMap = new HashMap<>(); // Item name → area index
+    private String[] labels = {"coin", "compass", "coral", "crystal", "diamond", "emerald", "fossil", "key", "letter", "shell", "treasure_box"};
 
     @Override
     protected void runPlan1() {
         Log.i("[KIBO]", "Mission Start");
         api.startMission();
+        loadModel(); // Load TFLite model
 
         // === Visit all 4 Target Areas ===
         for (int areaNum = 1; areaNum <= AREA_COUNT; areaNum++) {
@@ -45,7 +57,6 @@ public class YourService extends KiboRpcService {
             // Try AR detection and ROI cropping
             Mat roi = detectAndCropWithArUco(sharp, areaNum);
 
-            // Replace with real ML function later!
             String recognized = recognizeObject(roi, areaNum);
 
             // Store result and report to mission system
@@ -74,6 +85,72 @@ public class YourService extends KiboRpcService {
         } else {
             Log.e("[KIBO]", "Could not find target area for " + targetItem);
         }
+    }
+
+    // -------------- LOAD TFLITE -----------------
+
+    private void loadModel() {
+        try {
+            AssetFileDescriptor fileDescriptor = getApplicationContext().getAssets().openFd("model.tflite");
+            FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
+            FileChannel fileChannel = inputStream.getChannel();
+            long startOffset = fileDescriptor.getStartOffset();
+            long declaredLength = fileDescriptor.getDeclaredLength();
+            MappedByteBuffer modelBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+            tflite = new Interpreter(modelBuffer);
+        } catch (Exception e) {
+            Log.e("[KIBO]", "Model load error: " + e);
+        }
+    }
+
+    // -------------- AI STUFF -----------------
+
+    private float[][][][] preprocess(Mat src) {
+        // Resize to 512x512
+        Imgproc.resize(src, src, new Size(512, 512));
+
+        // Convert BGR (OpenCV) to RGB (model expects RGB)
+        Imgproc.cvtColor(src, src, Imgproc.COLOR_BGR2RGB);
+
+        // Convert to Bitmap
+        Bitmap bmp = Bitmap.createBitmap(src.cols(), src.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(src, bmp);
+
+        // Initialize input tensor [1, 512, 512, 3]
+        float[][][][] input = new float[1][512][512][3];
+
+        // Normalize and load RGB values into input tensor
+        for (int y = 0; y < 512; y++) {
+            for (int x = 0; x < 512; x++) {
+                int color = bmp.getPixel(x, y);
+                input[0][y][x][0] = ((color >> 16) & 0xFF) / 255.0f; // R
+                input[0][y][x][1] = ((color >> 8) & 0xFF) / 255.0f;  // G
+                input[0][y][x][2] = (color & 0xFF) / 255.0f;         // B
+            }
+        }
+        return input;
+    }
+
+    private String recognizeObject(Mat roi, int areaNum) {
+        // Optional: save for your review
+        api.saveMatImage(roi, "area" + areaNum + "_final_input.png");
+
+        float[][][][] input = preprocess(roi);
+        float[][] output = new float[1][labels.length];
+
+        tflite.run(input, output);
+
+        // Get index of highest confidence
+        int bestIdx = 0;
+        float maxScore = output[0][0];
+        for (int i = 1; i < labels.length; i++) {
+            if (output[0][i] > maxScore) {
+                maxScore = output[0][i];
+                bestIdx = i;
+            }
+        }
+        Log.i("[KIBO]", "Area " + areaNum + " confidence = " + maxScore);
+        return labels[bestIdx];
     }
 
     // -------------- NAVIGATION WITH RETRY -----------------
@@ -118,6 +195,8 @@ public class YourService extends KiboRpcService {
         return sharp;
     }
 
+
+
     // ---------- ARUCO MARKER & CROP REGION OF INTEREST ----------
     private Mat detectAndCropWithArUco(Mat img, int areaNum) {
         Dictionary arucoDict = Aruco.getPredefinedDictionary(Aruco.DICT_5X5_250);
@@ -148,17 +227,6 @@ public class YourService extends KiboRpcService {
         Imgproc.warpPerspective(img, roi, h, new Size(224,224));
         api.saveMatImage(roi, "area" + areaNum + "_roi.png");
         return roi;
-    }
-
-    // --------- PLACEHOLDER ML INFERENCE: REPLACE THIS LATER ---------
-    private String recognizeObject(Mat roi, int areaNum) {
-        // Save for your own review
-        api.saveMatImage(roi, "area" + areaNum + "_final_input.png");
-
-        // Replace below with ML/CNN output!
-        // For now, just rotate labels for demo/testing
-        String[] items = {"coin", "shell", "diamond", "letter"};
-        return items[(areaNum-1)%items.length];
     }
 
     // ------------- LOCATIONS AND ORIENTATIONS -------------
@@ -192,3 +260,28 @@ public class YourService extends KiboRpcService {
         return new Quaternion(0f, 0f, z, w);
     }
 }
+
+
+/*
+                     here is the reisen for good luck
+
+く__,.ヘヽ.　　　　/　,ー､ 〉
+　　　　　＼ ', !-─‐-i　/　/´
+　　　 　 ／｀ｰ'　　　 L/／｀ヽ､
+　　 　 /　 ／,　 /|　 ,　 ,　　　 ',
+　　　ｲ 　/ /-‐/　ｉ　L_ ﾊ ヽ!　 i
+　　　 ﾚ ﾍ 7ｲ｀ﾄ　 ﾚ'ｧ-ﾄ､!ハ|　 |
+　　　　 !,/7 '0'　　 ´0iソ| 　      |　　　
+　　　　 |.从"　　_　　 ,,,, / |./ 　 |
+　　　　 ﾚ'| i＞.､,,__　_,.イ / 　.i 　|
+　　　　　 ﾚ'| | / k_７_/ﾚ'ヽ,　ﾊ.　|
+　　　　　　 | |/i 〈|/　 i　,.ﾍ |　i　|
+　　　　　　.|/ /　ｉ： 　 ﾍ!　　＼　|
+　　　 　 　 kヽ>､ﾊ 　 _,.ﾍ､ 　 /､!
+　　　　　　 !'〈//｀Ｔ´', ＼ ｀'7'ｰr'
+　　　　　　 ﾚ'ヽL__|___i,___,ンﾚ|ノ
+　　　　　 　　　ﾄ-,/　|___./
+　　　　　 　　　'ｰ'　　!_,.:
+
+     we pray for stable builds and high scores
+*/
