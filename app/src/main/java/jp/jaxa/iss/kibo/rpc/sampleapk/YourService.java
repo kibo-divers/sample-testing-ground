@@ -1,4 +1,5 @@
 package jp.jaxa.iss.kibo.rpc.sampleapk;
+
 import android.content.res.AssetFileDescriptor;
 import android.util.Log;
 import java.io.FileInputStream;
@@ -9,7 +10,6 @@ import java.nio.channels.FileChannel;
 import org.opencv.android.Utils;
 import android.graphics.Bitmap;
 
-import android.util.Log;
 import org.tensorflow.lite.Interpreter;
 
 import gov.nasa.arc.astrobee.Result;
@@ -34,63 +34,59 @@ import org.opencv.imgproc.Imgproc;
 public class YourService extends KiboRpcService {
     private Interpreter tflite;
     private final int AREA_COUNT = 4;
-    private Map<String, Integer> itemLocationMap = new HashMap<>(); // Item name → area index
+    private Map<String, Integer> itemLocationMap = new HashMap<>();
     private String[] labels = {"coin", "compass", "coral", "crystal", "diamond", "emerald", "fossil", "key", "letter", "shell", "treasure_box"};
 
     @Override
     protected void runPlan1() {
-        Log.i("[KIBO]", "Mission Start");
+        Log.i("[KIBO]", "==== Mission Start ====");
         api.startMission();
-        loadModel(); // Load TFLite model
+        loadModel();
 
-        // === Visit all 4 Target Areas ===
         for (int areaNum = 1; areaNum <= AREA_COUNT; areaNum++) {
+            Log.i("[KIBO]", "→ Visiting Area " + areaNum);
             Point pt = getAreaPoint(areaNum);
             Quaternion qt = getAreaQuat(areaNum);
 
             moveToWithRetry(pt, qt);
-
             Mat raw = captureNavCam(areaNum);
             Mat undist = undistort(raw);
             Mat sharp = sharpenImg(undist);
-
-            // Try AR detection and ROI cropping
             Mat roi = detectAndCropWithArUco(sharp, areaNum);
 
             String recognized = recognizeObject(roi, areaNum);
+            Log.i("[KIBO]", "✓ Area " + areaNum + " detected item: " + recognized);
 
-            // Store result and report to mission system
             itemLocationMap.put(recognized, areaNum);
             api.setAreaInfo(areaNum, recognized, 1);
-
-            Log.i("[KIBO]", "Area " + areaNum + " recognized as: " + recognized);
         }
-        // == Move to Astronaut and wait for clue ==
-        moveToWithRetry(getAstronautPoint(), getAstronautQuat());
-        api.reportRoundingCompletion();
 
-        // === Simulate clue reception ===
+        Log.i("[KIBO]", "==== Detecting Clue Item ====");
         api.notifyRecognitionItem();
-        // For demonstration, set the target manually:
-        String targetItem = "diamond";
+
+        Mat raw = captureNavCam(-1);
+        Mat undist = undistort(raw);
+        Mat sharp = sharpenImg(undist);
+        Mat roi = detectAndCropWithArUco(sharp, -1);
+
+        String targetItem = recognizeObject(roi, -1);
+        Log.i("[KIBO]", "🎯 Clue Object: " + targetItem);
+
         int targetArea = itemLocationMap.getOrDefault(targetItem, -1);
 
-        Log.i("[KIBO]", "Target Clue is: " + targetItem + " found at area " + targetArea);
-
-        // === Move to Target Area to Take Photo ===
-        if (targetArea>0) {
+        if (targetArea > 0) {
+            Log.i("[KIBO]", "→ Moving to Area " + targetArea + " to take snapshot");
             moveToWithRetry(getAreaPoint(targetArea), getAreaQuat(targetArea));
             api.takeTargetItemSnapshot();
-            Log.i("[KIBO]", "Mission Complete: Photo taken.");
+            Log.i("[KIBO]", "📸 Photo taken for: " + targetItem);
         } else {
-            Log.e("[KIBO]", "Could not find target area for " + targetItem);
+            Log.e("[KIBO]", "⚠️ Target item not found: " + targetItem);
         }
     }
 
-    // -------------- LOAD TFLITE -----------------
-
     private void loadModel() {
         try {
+            Log.i("[KIBO]", "Loading model.tflite...");
             AssetFileDescriptor fileDescriptor = getApplicationContext().getAssets().openFd("model.tflite");
             FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
             FileChannel fileChannel = inputStream.getChannel();
@@ -98,41 +94,37 @@ public class YourService extends KiboRpcService {
             long declaredLength = fileDescriptor.getDeclaredLength();
             MappedByteBuffer modelBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
             tflite = new Interpreter(modelBuffer);
+            Log.i("[KIBO]", "✓ Model loaded successfully");
         } catch (Exception e) {
             Log.e("[KIBO]", "Model load error: " + e);
         }
     }
 
-    // -------------- AI STUFF -----------------
-
     private float[][][][] preprocess(Mat src) {
-        // Resize to 512x512
+        Log.i("[KIBO]", "Preprocessing image for model input...");
         Imgproc.resize(src, src, new Size(512, 512));
-
-        // Convert BGR (OpenCV) to RGB (model expects RGB)
         Imgproc.cvtColor(src, src, Imgproc.COLOR_BGR2RGB);
 
-        // Convert to Bitmap
         Bitmap bmp = Bitmap.createBitmap(src.cols(), src.rows(), Bitmap.Config.ARGB_8888);
         Utils.matToBitmap(src, bmp);
 
-        // Initialize input tensor [1, 512, 512, 3]
         float[][][][] input = new float[1][512][512][3];
 
-        // Normalize and load RGB values into input tensor
         for (int y = 0; y < 512; y++) {
             for (int x = 0; x < 512; x++) {
                 int color = bmp.getPixel(x, y);
-                input[0][y][x][0] = ((color >> 16) & 0xFF) / 255.0f; // R
-                input[0][y][x][1] = ((color >> 8) & 0xFF) / 255.0f;  // G
-                input[0][y][x][2] = (color & 0xFF) / 255.0f;         // B
+                input[0][y][x][0] = ((color >> 16) & 0xFF) / 255.0f;
+                input[0][y][x][1] = ((color >> 8) & 0xFF) / 255.0f;
+                input[0][y][x][2] = (color & 0xFF) / 255.0f;
             }
         }
+
+        Log.i("[KIBO]", "✓ Preprocessing complete");
         return input;
     }
 
     private String recognizeObject(Mat roi, int areaNum) {
-        // Optional: save for your review
+        Log.i("[KIBO]", "Running object recognition for area: " + areaNum);
         api.saveMatImage(roi, "area" + areaNum + "_final_input.png");
 
         float[][][][] input = preprocess(roi);
@@ -140,7 +132,6 @@ public class YourService extends KiboRpcService {
 
         tflite.run(input, output);
 
-        // Get index of highest confidence
         int bestIdx = 0;
         float maxScore = output[0][0];
         for (int i = 1; i < labels.length; i++) {
@@ -149,31 +140,35 @@ public class YourService extends KiboRpcService {
                 bestIdx = i;
             }
         }
-        Log.i("[KIBO]", "Area " + areaNum + " confidence = " + maxScore);
+
+        Log.i("[KIBO]", "✓ Recognition result: " + labels[bestIdx] + " (confidence: " + maxScore + ")");
         return labels[bestIdx];
     }
 
-    // -------------- NAVIGATION WITH RETRY -----------------
     private void moveToWithRetry(Point pt, Quaternion qt) {
+        Log.i("[KIBO]", "Attempting to move...");
         int maxRetry = 3;
         Result r = null;
         for (int i = 0; i < maxRetry; i++) {
             r = api.moveTo(pt, qt, false);
-            if (r.hasSucceeded())    // SUCCEED: exit method
+            if (r.hasSucceeded()) {
+                Log.i("[KIBO]", "✓ Move succeeded");
                 return;
-            Log.w("[KIBO]", "Move failed, retry " + (i+1));
+            }
+            Log.w("[KIBO]", "Move failed, retry " + (i + 1));
         }
-        Log.e("[KIBO]", "Failed to move after " + maxRetry + " tries");
+        Log.e("[KIBO]", "❌ Failed to move after " + maxRetry + " attempts");
     }
 
-    // ----------- IMAGE CAPTURE, UNDISTORT, SHARPEN ----------
     private Mat captureNavCam(int areaNum) {
+        Log.i("[KIBO]", "Capturing NavCam image for area: " + areaNum);
         Mat img = api.getMatNavCam();
         api.saveMatImage(img, "area" + areaNum + "_raw.png");
         return img;
     }
 
     private Mat undistort(Mat img) {
+        Log.i("[KIBO]", "Undistorting image...");
         double[][] params = api.getNavCamIntrinsics();
         Mat undist = new Mat();
         Mat K = new Mat(3, 3, CvType.CV_64F);
@@ -185,51 +180,48 @@ public class YourService extends KiboRpcService {
     }
 
     private Mat sharpenImg(Mat img) {
+        Log.i("[KIBO]", "Sharpening image...");
         Mat kernel = new Mat(3, 3, CvType.CV_32F) {{
-            put(0,0,0);   put(0,1,-1); put(0,2,0);
-            put(1,0,-1);  put(1,1,5);  put(1,2,-1);
-            put(2,0,0);   put(2,1,-1); put(2,2,0);
+            put(0,0,0); put(0,1,-1); put(0,2,0);
+            put(1,0,-1); put(1,1,5); put(1,2,-1);
+            put(2,0,0); put(2,1,-1); put(2,2,0);
         }};
         Mat sharp = new Mat();
         Imgproc.filter2D(img, sharp, -1, kernel);
         return sharp;
     }
 
-
-
-    // ---------- ARUCO MARKER & CROP REGION OF INTEREST ----------
     private Mat detectAndCropWithArUco(Mat img, int areaNum) {
+        Log.i("[KIBO]", "Detecting ARUco for ROI in area: " + areaNum);
         Dictionary arucoDict = Aruco.getPredefinedDictionary(Aruco.DICT_5X5_250);
         List<Mat> corners = new ArrayList<>();
         Mat ids = new Mat();
         Aruco.detectMarkers(img, arucoDict, corners, ids);
 
         if (corners.isEmpty()) {
-            Log.w("[KIBO]", "No ARUco tag found in area " + areaNum + ", using full image as fallback");
+            Log.w("[KIBO]", "⚠️ No ARUco marker detected. Using full image.");
             api.saveMatImage(img, "area" + areaNum + "_roi.png");
             return img;
         }
 
-        // Simplification: Use first detected marker for ROI
         Mat markerCorners = corners.get(0);
-        // 4 corners: [0]=TL, [1]=TR, [2]=BR, [3]=BL. 2D array: 4x1x2
-
-        // Set perspective destination to a square region (size 224x224, for CNN compat)
         Mat srcPts = markerCorners;
-        Mat dstPts = new Mat(4,1,CvType.CV_32FC2);
-        dstPts.put(0,0,    0, 0,
-                223,0,
-                223,223,
-                0,223);
+        Mat dstPts = new Mat(4, 1, CvType.CV_32FC2);
+        dstPts.put(0, 0,
+                0, 0,
+                223, 0,
+                223, 223,
+                0, 223);
 
         Mat h = Imgproc.getPerspectiveTransform(srcPts, dstPts);
         Mat roi = new Mat();
-        Imgproc.warpPerspective(img, roi, h, new Size(224,224));
+        Imgproc.warpPerspective(img, roi, h, new Size(224, 224));
+
         api.saveMatImage(roi, "area" + areaNum + "_roi.png");
+        Log.i("[KIBO]", "✓ ROI cropped with ARUco guidance");
         return roi;
     }
 
-    // ------------- LOCATIONS AND ORIENTATIONS -------------
     private Point getAreaPoint(int areaNum) {
         switch(areaNum) {
             case 1: return new Point(10.95, -10.58, 5.20);
@@ -248,40 +240,7 @@ public class YourService extends KiboRpcService {
         }
     }
 
-    private Point getAstronautPoint() {
-        return new Point(11.143, -6.7607, 4.9654);
-    }
-    private Quaternion getAstronautQuat() {
-        return quat(0.707f, 0.707f);
-    }
-
-    // ------------ SIMPLE QUATERNION HELPERS --------------
     private Quaternion quat(float z, float w) {
         return new Quaternion(0f, 0f, z, w);
     }
 }
-
-
-/*
-                     here is the reisen for good luck
-
-く__,.ヘヽ.　　　　/　,ー､ 〉
-　　　　　＼ ', !-─‐-i　/　/´
-　　　 　 ／｀ｰ'　　　 L/／｀ヽ､
-　　 　 /　 ／,　 /|　 ,　 ,　　　 ',
-　　　ｲ 　/ /-‐/　ｉ　L_ ﾊ ヽ!　 i
-　　　 ﾚ ﾍ 7ｲ｀ﾄ　 ﾚ'ｧ-ﾄ､!ハ|　 |
-　　　　 !,/7 '0'　　 ´0iソ| 　      |　　　
-　　　　 |.从"　　_　　 ,,,, / |./ 　 |
-　　　　 ﾚ'| i＞.､,,__　_,.イ / 　.i 　|
-　　　　　 ﾚ'| | / k_７_/ﾚ'ヽ,　ﾊ.　|
-　　　　　　 | |/i 〈|/　 i　,.ﾍ |　i　|
-　　　　　　.|/ /　ｉ： 　 ﾍ!　　＼　|
-　　　 　 　 kヽ>､ﾊ 　 _,.ﾍ､ 　 /､!
-　　　　　　 !'〈//｀Ｔ´', ＼ ｀'7'ｰr'
-　　　　　　 ﾚ'ヽL__|___i,___,ンﾚ|ノ
-　　　　　 　　　ﾄ-,/　|___./
-　　　　　 　　　'ｰ'　　!_,.:
-
-     we pray for stable builds and high scores
-*/
