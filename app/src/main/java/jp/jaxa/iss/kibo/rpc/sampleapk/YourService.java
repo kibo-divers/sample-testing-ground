@@ -1,38 +1,39 @@
 package jp.jaxa.iss.kibo.rpc.sampleapk;
 
-import android.content.res.AssetFileDescriptor;
+import android.graphics.Bitmap;
 import android.util.Log;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel;
 
 import org.opencv.android.Utils;
-import android.graphics.Bitmap;
-
-import org.tensorflow.lite.Interpreter;
-
-import gov.nasa.arc.astrobee.Result;
-import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
-
-import gov.nasa.arc.astrobee.types.Point;
-import gov.nasa.arc.astrobee.types.Quaternion;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 import org.opencv.aruco.Aruco;
 import org.opencv.aruco.Dictionary;
+import org.opencv.calib3d.Calib3d;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.Size;
-import org.opencv.calib3d.Calib3d;
 import org.opencv.imgproc.Imgproc;
 
+import org.tensorflow.lite.support.image.TensorImage;
+import org.tensorflow.lite.task.vision.classifier.ImageClassifier;
+import org.tensorflow.lite.task.vision.classifier.ImageClassifier.ImageClassifierOptions;
+import org.tensorflow.lite.task.vision.classifier.Classifications;
+import org.tensorflow.lite.support.label.Category;
+
+import gov.nasa.arc.astrobee.Result;
+import gov.nasa.arc.astrobee.types.Point;
+import gov.nasa.arc.astrobee.types.Quaternion;
+import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.ArrayList;
+
 public class YourService extends KiboRpcService {
-    private Interpreter tflite;
+    private ImageClassifier classifier;
     private final int AREA_COUNT = 4;
     private Map<String, Integer> itemLocationMap = new HashMap<>();
     private String[] labels = {"coin", "compass", "coral", "crystal", "diamond", "emerald", "fossil", "key", "letter", "shell", "treasure_box"};
@@ -42,6 +43,12 @@ public class YourService extends KiboRpcService {
         Log.i("[KIBO]", "==== Mission Start ====");
         api.startMission();
         loadModel();
+
+        if (classifier == null) {
+            Log.e("[KIBO]", "❌ Aborting mission: model not loaded.");
+            api.takeTargetItemSnapshot();
+            return;
+        }
 
         for (int areaNum = 1; areaNum <= AREA_COUNT; areaNum++) {
             Log.i("[KIBO]", "→ Visiting Area " + areaNum);
@@ -86,63 +93,72 @@ public class YourService extends KiboRpcService {
 
     private void loadModel() {
         try {
-            Log.i("[KIBO]", "Loading model.tflite...");
-            AssetFileDescriptor fileDescriptor = getApplicationContext().getAssets().openFd("model.tflite");
-            FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
-            FileChannel fileChannel = inputStream.getChannel();
-            long startOffset = fileDescriptor.getStartOffset();
-            long declaredLength = fileDescriptor.getDeclaredLength();
-            MappedByteBuffer modelBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
-            tflite = new Interpreter(modelBuffer);
-            Log.i("[KIBO]", "✓ Model loaded successfully");
-        } catch (Exception e) {
-            Log.e("[KIBO]", "Model load error: " + e);
-        }
-    }
-
-    private float[][][][] preprocess(Mat src) {
-        Log.i("[KIBO]", "Preprocessing image for model input...");
-        Imgproc.resize(src, src, new Size(512, 512));
-        Imgproc.cvtColor(src, src, Imgproc.COLOR_BGR2RGB);
-
-        Bitmap bmp = Bitmap.createBitmap(src.cols(), src.rows(), Bitmap.Config.ARGB_8888);
-        Utils.matToBitmap(src, bmp);
-
-        float[][][][] input = new float[1][512][512][3];
-
-        for (int y = 0; y < 512; y++) {
-            for (int x = 0; x < 512; x++) {
-                int color = bmp.getPixel(x, y);
-                input[0][y][x][0] = ((color >> 16) & 0xFF) / 255.0f;
-                input[0][y][x][1] = ((color >> 8) & 0xFF) / 255.0f;
-                input[0][y][x][2] = (color & 0xFF) / 255.0f;
+            // Copy model from assets to cache directory
+            File modelFile = new File(getApplicationContext().getCacheDir(), "best_float32.tflite");
+            if (!modelFile.exists()) {
+                try (InputStream is = getApplicationContext().getAssets().open("best_float32.tflite");
+                     FileOutputStream fos = new FileOutputStream(modelFile)) {
+                    byte[] buffer = new byte[1024];
+                    int read;
+                    while ((read = is.read(buffer)) != -1) {
+                        fos.write(buffer, 0, read);
+                    }
+                    fos.flush();
+                }
             }
-        }
 
-        Log.i("[KIBO]", "✓ Preprocessing complete");
-        return input;
+            ImageClassifierOptions options = ImageClassifierOptions.builder()
+                    .setMaxResults(3)
+                    .setScoreThreshold(0.5f)
+                    .build();
+
+            classifier = ImageClassifier.createFromFileAndOptions(
+                    getApplicationContext(),
+                    modelFile.getAbsolutePath(),
+                    options);
+
+            Log.i("[KIBO]", "✓ ImageClassifier model loaded successfully");
+        } catch (IOException e) {
+            Log.e("[KIBO]", "Failed to load model", e);
+            Log.e("[KIBO]", "❌ Aborting mission: model not loaded. kms");
+            api.takeTargetItemSnapshot();
+            classifier = null;
+        }
     }
+
 
     private String recognizeObject(Mat roi, int areaNum) {
         Log.i("[KIBO]", "Running object recognition for area: " + areaNum);
         api.saveMatImage(roi, "area" + areaNum + "_final_input.png");
 
-        float[][][][] input = preprocess(roi);
-        float[][] output = new float[1][labels.length];
-
-        tflite.run(input, output);
-
-        int bestIdx = 0;
-        float maxScore = output[0][0];
-        for (int i = 1; i < labels.length; i++) {
-            if (output[0][i] > maxScore) {
-                maxScore = output[0][i];
-                bestIdx = i;
-            }
+        if (classifier == null) {
+            Log.e("[KIBO]", "❌ ImageClassifier is null. Skipping recognition.");
+            return "unknown";
         }
 
-        Log.i("[KIBO]", "✓ Recognition result: " + labels[bestIdx] + " (confidence: " + maxScore + ")");
-        return labels[bestIdx];
+        Bitmap bmp = Bitmap.createBitmap(roi.cols(), roi.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(roi, bmp);
+
+        TensorImage tensorImage = TensorImage.fromBitmap(bmp);
+        List<Classifications> results = classifier.classify(tensorImage);
+
+        if (results.isEmpty()) {
+            Log.i("[KIBO]", "No classification results.");
+            return "unknown";
+        }
+
+        List<Category> categories = results.get(0).getCategories();
+
+        if (categories.isEmpty()) {
+            Log.i("[KIBO]", "No categories detected.");
+            return "unknown";
+        }
+
+        for (Category category : categories) {
+            Log.i("[KIBO]", String.format("Detected %s with score %.2f", category.getLabel(), category.getScore()));
+        }
+
+        return categories.get(0).getLabel();
     }
 
     private void moveToWithRetry(Point pt, Quaternion qt) {
@@ -182,9 +198,9 @@ public class YourService extends KiboRpcService {
     private Mat sharpenImg(Mat img) {
         Log.i("[KIBO]", "Sharpening image...");
         Mat kernel = new Mat(3, 3, CvType.CV_32F) {{
-            put(0,0,0); put(0,1,-1); put(0,2,0);
-            put(1,0,-1); put(1,1,5); put(1,2,-1);
-            put(2,0,0); put(2,1,-1); put(2,2,0);
+            put(0, 0, 0); put(0, 1, -1); put(0, 2, 0);
+            put(1, 0, -1); put(1, 1, 5); put(1, 2, -1);
+            put(2, 0, 0); put(2, 1, -1); put(2, 2, 0);
         }};
         Mat sharp = new Mat();
         Imgproc.filter2D(img, sharp, -1, kernel);
@@ -223,20 +239,30 @@ public class YourService extends KiboRpcService {
     }
 
     private Point getAreaPoint(int areaNum) {
-        switch(areaNum) {
-            case 1: return new Point(10.95, -10.58, 5.20);
-            case 2: return new Point(10.925, -8.875, 3.76203);
-            case 3: return new Point(10.925, -7.925, 3.76093);
-            case 4: return new Point(9.866984, -6.8525, 4.945);
-            default: return new Point(10.95, -10.58, 5.20);
+        switch (areaNum) {
+            case 1:
+                return new Point(10.95, -10.58, 5.20);
+            case 2:
+                return new Point(10.925, -8.875, 3.76203);
+            case 3:
+                return new Point(10.925, -7.925, 3.76093);
+            case 4:
+                return new Point(9.866984, -6.8525, 4.945);
+            default:
+                return new Point(10.95, -10.58, 5.20);
         }
     }
 
     private Quaternion getAreaQuat(int areaNum) {
-        switch(areaNum) {
-            case 1: case 2: case 3: return quat(-0.707f, 0.707f);
-            case 4: return quat(1f, 0f);
-            default: return quat(-0.707f, 0.707f);
+        switch (areaNum) {
+            case 1:
+            case 2:
+            case 3:
+                return quat(-0.707f, 0.707f);
+            case 4:
+                return quat(1f, 0f);
+            default:
+                return quat(-0.707f, 0.707f);
         }
     }
 
