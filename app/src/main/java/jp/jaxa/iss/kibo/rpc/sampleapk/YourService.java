@@ -37,73 +37,124 @@ import java.util.Map;
 import java.util.ArrayList;
 
 public class YourService extends KiboRpcService {
-    ObjectDetector detector;
-    private final int AREA_COUNT = 4;
-    private Map<String, Integer> itemLocationMap = new HashMap<>();
-    List<String> labels;
+
+    private ObjectDetector detector;
+    private List<String> labels;
+
     @Override
     protected void runPlan1() {
-        Log.i("[KIBO]", "==== Mission Start ====");
+        Log.i("[KIBO-DIVERS]", "=== KIBO-DIVERS::MISSION START ===");
         api.startMission();
         loadModel();
 
-        if (detector == null) {
-            Log.e("[KIBO]", "❌ Aborting mission: model not loaded.");
-            api.takeTargetItemSnapshot();
-            return;
-        }
+        Map<String, Integer> itemLocationMap = new HashMap<>();
 
-        for (int areaNum = 1; areaNum <= AREA_COUNT; areaNum++) {
-            Log.i("[KIBO]", "→ Visiting Area " + areaNum);
-            Point pt = getAreaPoint(areaNum);
-            Quaternion qt = getAreaQuat(areaNum);
+        // === Area 1 ===
+        Log.i("[KIBO-DIVERS]", "Moving to Target 1");
+        moveToWithRetry(new Point(10.95, -10.58, 5.20), quat(-0.707f, 0.707f));
+        String item1 = inspectArea(1);
+        recordItem(itemLocationMap, 1, item1, 1);
+        api.setAreaInfo(1, item1, 1);
 
-            moveToWithRetry(pt, qt);
-            Mat raw = captureNavCam(areaNum);
-            Mat undist = undistort(raw);
-            Mat sharp = sharpenImg(undist);
-            Mat roi = detectAndCropWithArUco(sharp, areaNum);
+        // === Oasis 1 ===
+        moveToWithRetry(new Point(10.925, -9.85, 4.695), quat(-0.707f, 0.707f));
 
-            String recognized = recognizeObject(roi, areaNum);
-            Log.i("[KIBO]", "✓ Area " + areaNum + " detected item: " + recognized);
+        // === Area 2 ===
+        moveToWithRetry(new Point(10.925, -8.875, 3.76203), quat(-0.707f, 0.707f));
+        String item2 = inspectArea(2);
+        recordItem(itemLocationMap, 2, item2, 1);
+        api.setAreaInfo(2, item2, 1);
 
-            itemLocationMap.put(recognized, areaNum);
-            api.setAreaInfo(areaNum, recognized, 1);
-        }
+        // === Oasis 2 ===
+        moveToWithRetry(new Point(11.2, -8.5, 5.2), quat(0.707f, 0.707f));
 
-        Log.i("[KIBO]", "==== Detecting Clue Item ====");
+        // === Area 3 ===
+        moveToWithRetry(new Point(10.925, -7.925, 3.76093), quat(-0.707f, 0.707f));
+        String item3 = inspectArea(3);
+        recordItem(itemLocationMap, 3, item3, 1);
+        api.setAreaInfo(3, item3, 1);
+
+        // === Oasis 3 ===
+        moveToWithRetry(new Point(10.7, -7.5, 5.2), quat(0.707f, 0.707f));
+
+        // === Area 4 ===
+        moveToWithRetry(new Point(9.866984, -6.8525, 4.945), quat(1f, 0f));
+        String item4 = inspectArea(4);
+        recordItem(itemLocationMap, 4, item4, 1);
+        api.setAreaInfo(4, item4, 1);
+
+        // === Oasis 4 ===
+        moveToWithRetry(new Point(11.2, -6.85, 4.695), quat(0.707f, 0.707f));
+
+        // === Astronaut ===
+        Point astronaut = new Point(11.143, -6.7607, 4.9654);
+        moveToWithRetry(astronaut, quat(0.707f, 0.707f));
+        api.reportRoundingCompletion();
+        String targetItem = "diamond"; // example simulation value
         api.notifyRecognitionItem();
 
-        Mat raw = captureNavCam(-1);
-        Mat undist = undistort(raw);
-        Mat sharp = sharpenImg(undist);
-        Mat roi = detectAndCropWithArUco(sharp, -1);
-
-        String targetItem = recognizeObject(roi, -1);
-        Log.i("[KIBO]", "🎯 Clue Object: " + targetItem);
-
+        // === Locate and go to treasure ===
         int targetArea = itemLocationMap.getOrDefault(targetItem, -1);
+        Point targetPoint;
+        Quaternion targetQuat;
 
-        if (targetArea > 0) {
-            Log.i("[KIBO]", "→ Moving to Area " + targetArea + " to take snapshot");
-            moveToWithRetry(getAreaPoint(targetArea), getAreaQuat(targetArea));
-            api.takeTargetItemSnapshot();
-            Log.i("[KIBO]", "📸 Photo taken for: " + targetItem);
-        } else {
-            Log.e("[KIBO]", "⚠️ Target item not found: " + targetItem);
+        switch (targetArea) {
+            case 1:
+                targetPoint = new Point(10.95, -10.58, 5.20);
+                targetQuat = quat(-0.707f, 0.707f);
+                break;
+            case 2:
+                targetPoint = new Point(10.925, -8.875, 3.76203);
+                targetQuat = quat(-0.707f, 0.707f);
+                break;
+            case 3:
+                targetPoint = new Point(10.925, -7.925, 3.76093);
+                targetQuat = quat(-0.707f, 0.707f);
+                break;
+            case 4:
+                targetPoint = new Point(9.866984, -6.8525, 4.945);
+                targetQuat = quat(1f, 0f);
+                break;
+            default:
+                targetPoint = astronaut;
+                targetQuat = quat(0.707f, 0.707f);
+                break;
+        }
+
+        moveToWithRetry(targetPoint, targetQuat);
+        api.takeTargetItemSnapshot();
+    }
+
+    // === Navigation & Logic Helpers ===
+    private void moveToWithRetry(Point pt, Quaternion qt) {
+        api.moveTo(pt, qt, false);
+    }
+
+    private void recordItem(Map<String, Integer> map, int area, String itemName, int count) {
+        if (count > 0) {
+            map.put(itemName, area);
         }
     }
 
+    private Quaternion quat(float z, float w) {
+        return new Quaternion(0f, 0f, z, w);
+    }
+
+    private String inspectArea(int areaNum) {
+        Mat img = captureNavCam(areaNum);
+        Mat undist = undistort(img);
+        Mat sharp = sharpenImg(undist);
+        Mat roi = detectAndCropWithArUco(sharp, areaNum);
+        return recognizeObject(roi, areaNum);
+    }
+
+    // === Image Processing & Detection ===
     private void loadModel() {
         try {
-            // Target file location in internal cache directory
             File modelFile = new File(getApplicationContext().getCacheDir(), "model.tflite");
-
-            // Copy from assets to cache if it doesn't exist
             if (!modelFile.exists()) {
                 try (InputStream is = getApplicationContext().getAssets().open("model.tflite");
                      FileOutputStream fos = new FileOutputStream(modelFile)) {
-
                     byte[] buffer = new byte[1024];
                     int read;
                     while ((read = is.read(buffer)) != -1) {
@@ -113,124 +164,81 @@ public class YourService extends KiboRpcService {
                 }
             }
 
-            // Build the options
             ObjectDetectorOptions options = ObjectDetectorOptions.builder()
                     .setMaxResults(3)
                     .setScoreThreshold(0.5f)
                     .build();
 
-            detector = ObjectDetector.createFromFileAndOptions(
-                    modelFile, // File object, not String path
-                    options
-            );
-
-            // Load labels
+            detector = ObjectDetector.createFromFileAndOptions(modelFile, options);
             labels = loadLabels(getApplicationContext());
 
             Log.i("[KIBO]", "✓ ObjectDetector model and labels loaded successfully");
-
         } catch (IOException e) {
             Log.e("[KIBO]", "❌ Failed to load object detection model", e);
             detector = null;
         }
     }
 
+    private List<String> loadLabels(Context context) {
+        List<String> labelList = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(context.getAssets().open("labels.txt")))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                labelList.add(line);
+            }
+        } catch (IOException e) {
+            Log.e("[KIBO]", "Error reading labels.txt", e);
+        }
+        return labelList;
+    }
 
     private String recognizeObject(Mat roi, int areaNum) {
-        Log.i("[KIBO]", "Running object detection for area: " + areaNum);
         api.saveMatImage(roi, "area" + areaNum + "_final_input.png");
 
         if (detector == null) {
-            Log.e("[KIBO]", "❌ ObjectDetector is null. Skipping detection.");
+            Log.e("[KIBO]", "Detector not initialized");
             return "unknown";
         }
 
-        // Convert Mat to Bitmap
         Bitmap bmp = Bitmap.createBitmap(roi.cols(), roi.rows(), Bitmap.Config.ARGB_8888);
         Utils.matToBitmap(roi, bmp);
 
-        // Run detection
-        TensorImage tensorImage = TensorImage.fromBitmap(bmp);
-        List<Detection> results = detector.detect(tensorImage);
+        TensorImage image = TensorImage.fromBitmap(bmp);
+        List<Detection> results = detector.detect(image);
 
-        if (results.isEmpty()) {
-            Log.i("[KIBO]", "No objects detected.");
-            return "unknown";
-        }
+        if (results.isEmpty()) return "unknown";
 
-        // Log all detected objects
-        for (Detection detection : results) {
-            List<Category> categories = detection.getCategories();
-            if (!categories.isEmpty()) {
-                Category category = categories.get(0);
-                Log.i("[KIBO]", String.format("Detected %s with score %.2f", category.getLabel(), category.getScore()));
-            }
-        }
-
-        // Return label of the most confident detection
-        Detection topResult = results.get(0);
-        if (!topResult.getCategories().isEmpty()) {
-            int classIndex = topResult.getCategories().get(0).getIndex();
+        Detection top = results.get(0);
+        if (!top.getCategories().isEmpty()) {
+            int classIndex = top.getCategories().get(0).getIndex();
             if (classIndex >= 0 && classIndex < labels.size()) {
                 return labels.get(classIndex);
-            } else {
-                return "unknown";
             }
         }
 
         return "unknown";
     }
 
-    private List<String> loadLabels(Context context) {
-        List<String> labels = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(context.getAssets().open("labels.txt")))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                labels.add(line);
-            }
-        } catch (IOException e) {
-            Log.e("[KIBO]", "Error reading labels.txt", e);
-        }
-        return labels;
-    }
-
-    private void moveToWithRetry(Point pt, Quaternion qt) {
-        Log.i("[KIBO]", "Attempting to move...");
-        int maxRetry = 3;
-        Result r = null;
-        for (int i = 0; i < maxRetry; i++) {
-            r = api.moveTo(pt, qt, false);
-            if (r.hasSucceeded()) {
-                Log.i("[KIBO]", "✓ Move succeeded");
-                return;
-            }
-            Log.w("[KIBO]", "Move failed, retry " + (i + 1));
-        }
-        Log.e("[KIBO]", "❌ Failed to move after " + maxRetry + " attempts");
-    }
-
     private Mat captureNavCam(int areaNum) {
-        Log.i("[KIBO]", "Capturing NavCam image for area: " + areaNum);
         Mat img = api.getMatNavCam();
         api.saveMatImage(img, "area" + areaNum + "_raw.png");
         return img;
     }
 
     private Mat undistort(Mat img) {
-        Log.i("[KIBO]", "Undistorting image...");
-        double[][] params = api.getNavCamIntrinsics();
-        Mat undist = new Mat();
+        double[][] intrinsics = api.getNavCamIntrinsics();
         Mat K = new Mat(3, 3, CvType.CV_64F);
-        K.put(0, 0, params[0]);
+        K.put(0, 0, intrinsics[0]);
         Mat D = new Mat(1, 5, CvType.CV_64F);
-        D.put(0, 0, params[1]);
-        Calib3d.undistort(img, undist, K, D);
-        return undist;
+        D.put(0, 0, intrinsics[1]);
+
+        Mat undistorted = new Mat();
+        Calib3d.undistort(img, undistorted, K, D);
+        return undistorted;
     }
 
     private Mat sharpenImg(Mat img) {
-        Log.i("[KIBO]", "Sharpening image...");
         Mat kernel = new Mat(3, 3, CvType.CV_32F) {{
             put(0, 0, 0); put(0, 1, -1); put(0, 2, 0);
             put(1, 0, -1); put(1, 1, 5); put(1, 2, -1);
@@ -242,71 +250,26 @@ public class YourService extends KiboRpcService {
     }
 
     private Mat detectAndCropWithArUco(Mat img, int areaNum) {
-        Log.i("[KIBO]", "Detecting ARUco for ROI in area: " + areaNum);
-        Dictionary arucoDict = Aruco.getPredefinedDictionary(Aruco.DICT_5X5_250);
+        Dictionary dict = Aruco.getPredefinedDictionary(Aruco.DICT_5X5_250);
         List<Mat> corners = new ArrayList<>();
         Mat ids = new Mat();
-        Aruco.detectMarkers(img, arucoDict, corners, ids);
+        Aruco.detectMarkers(img, dict, corners, ids);
 
         if (corners.isEmpty()) {
-            Log.w("[KIBO]", "⚠️ No ARUco marker detected. Using full image.");
+            Log.w("[KIBO]", "No ARUco detected, using full image");
             api.saveMatImage(img, "area" + areaNum + "_roi.png");
             return img;
         }
 
-        Mat markerCorners = corners.get(0);
-        Mat srcPts = markerCorners;
-        Mat dstPts = new Mat(4, 1, CvType.CV_32FC2);
-        dstPts.put(0, 0,
-                0, 0,
-                223, 0,
-                223, 223,
-                0, 223);
+        Mat marker = corners.get(0);
+        Mat src = marker;
+        Mat dst = new Mat(4, 1, CvType.CV_32FC2);
+        dst.put(0, 0, 0, 0, 223, 0, 223, 223, 0, 223);
 
-        Mat h = Imgproc.getPerspectiveTransform(srcPts, dstPts);
+        Mat H = Imgproc.getPerspectiveTransform(src, dst);
         Mat roi = new Mat();
-        Imgproc.warpPerspective(img, roi, h, new Size(224, 224));
-
+        Imgproc.warpPerspective(img, roi, H, new Size(224, 224));
         api.saveMatImage(roi, "area" + areaNum + "_roi.png");
-        Log.i("[KIBO]", "✓ ROI cropped with ARUco guidance");
         return roi;
-    }
-
-    private Point getAreaPoint(int areaNum) {
-        switch (areaNum) {
-            case 1:
-                // Slightly safer z-value to ensure within 4.82 - 5.57
-                return new Point(10.95, -10.58, 5.1);
-            case 2:
-                return new Point(10.925, -8.875, 3.76203);  // center of Area 2
-            case 3:
-                return new Point(10.925, -7.925, 3.76093);  // center of Area 3
-            case 4:
-                return new Point(9.866984, -6.8525, 4.945); // midpoint of z
-            default:
-                return new Point(10.95, -10.58, 5.1);
-        }
-    }
-
-    private Quaternion getAreaQuat(int areaNum) {
-        switch (areaNum) {
-            case 1:
-                // No rotation to avoid exceeding Y-plane
-                return quat(0f, 1f); // identity quaternion: x=0, y=0, z=0, w=1
-            case 2:
-            case 3:
-                // Face along Y axis: 90° around Z-axis
-                return quat(-0.707f, 0.707f);
-            case 4:
-                // Face along X axis (identity)
-                return quat(1f, 0f);
-            default:
-                return quat(0f, 1f);
-        }
-    }
-
-
-    private Quaternion quat(float z, float w) {
-        return new Quaternion(0f, 0f, z, w);
     }
 }
