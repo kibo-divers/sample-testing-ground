@@ -1,5 +1,6 @@
 package jp.jaxa.iss.kibo.rpc.sampleapk;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.util.Log;
 
@@ -13,8 +14,9 @@ import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
 import org.tensorflow.lite.support.image.TensorImage;
-import org.tensorflow.lite.task.vision.classifier.ImageClassifier;
-import org.tensorflow.lite.task.vision.classifier.ImageClassifier.ImageClassifierOptions;
+import org.tensorflow.lite.task.vision.detector.Detection;
+import org.tensorflow.lite.task.vision.detector.ObjectDetector;
+import org.tensorflow.lite.task.vision.detector.ObjectDetector.ObjectDetectorOptions;
 import org.tensorflow.lite.task.vision.classifier.Classifications;
 import org.tensorflow.lite.support.label.Category;
 
@@ -23,28 +25,29 @@ import gov.nasa.arc.astrobee.types.Point;
 import gov.nasa.arc.astrobee.types.Quaternion;
 import jp.jaxa.iss.kibo.rpc.api.KiboRpcService;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
 
 public class YourService extends KiboRpcService {
-    private ImageClassifier classifier;
+    ObjectDetector detector;
     private final int AREA_COUNT = 4;
     private Map<String, Integer> itemLocationMap = new HashMap<>();
-    private String[] labels = {"coin", "compass", "coral", "crystal", "diamond", "emerald", "fossil", "key", "letter", "shell", "treasure_box"};
-
+    List<String> labels;
     @Override
     protected void runPlan1() {
         Log.i("[KIBO]", "==== Mission Start ====");
         api.startMission();
         loadModel();
 
-        if (classifier == null) {
+        if (detector == null) {
             Log.e("[KIBO]", "❌ Aborting mission: model not loaded.");
             api.takeTargetItemSnapshot();
             return;
@@ -93,11 +96,14 @@ public class YourService extends KiboRpcService {
 
     private void loadModel() {
         try {
-            // Copy model from assets to cache directory
-            File modelFile = new File(getApplicationContext().getCacheDir(), "best_float32.tflite");
+            // Target file location in internal cache directory
+            File modelFile = new File(getApplicationContext().getCacheDir(), "model.tflite");
+
+            // Copy from assets to cache if it doesn't exist
             if (!modelFile.exists()) {
-                try (InputStream is = getApplicationContext().getAssets().open("best_float32.tflite");
+                try (InputStream is = getApplicationContext().getAssets().open("model.tflite");
                      FileOutputStream fos = new FileOutputStream(modelFile)) {
+
                     byte[] buffer = new byte[1024];
                     int read;
                     while ((read = is.read(buffer)) != -1) {
@@ -107,58 +113,86 @@ public class YourService extends KiboRpcService {
                 }
             }
 
-            ImageClassifierOptions options = ImageClassifierOptions.builder()
+            // Build the options
+            ObjectDetectorOptions options = ObjectDetectorOptions.builder()
                     .setMaxResults(3)
                     .setScoreThreshold(0.5f)
                     .build();
 
-            classifier = ImageClassifier.createFromFileAndOptions(
-                    getApplicationContext(),
-                    modelFile.getAbsolutePath(),
-                    options);
+            detector = ObjectDetector.createFromFileAndOptions(
+                    modelFile, // File object, not String path
+                    options
+            );
 
-            Log.i("[KIBO]", "✓ ImageClassifier model loaded successfully");
+            // Load labels
+            labels = loadLabels(getApplicationContext());
+
+            Log.i("[KIBO]", "✓ ObjectDetector model and labels loaded successfully");
+
         } catch (IOException e) {
-            Log.e("[KIBO]", "Failed to load model", e);
-            Log.e("[KIBO]", "❌ Aborting mission: model not loaded. kms");
-            api.takeTargetItemSnapshot();
-            classifier = null;
+            Log.e("[KIBO]", "❌ Failed to load object detection model", e);
+            detector = null;
         }
     }
 
 
     private String recognizeObject(Mat roi, int areaNum) {
-        Log.i("[KIBO]", "Running object recognition for area: " + areaNum);
+        Log.i("[KIBO]", "Running object detection for area: " + areaNum);
         api.saveMatImage(roi, "area" + areaNum + "_final_input.png");
 
-        if (classifier == null) {
-            Log.e("[KIBO]", "❌ ImageClassifier is null. Skipping recognition.");
+        if (detector == null) {
+            Log.e("[KIBO]", "❌ ObjectDetector is null. Skipping detection.");
             return "unknown";
         }
 
+        // Convert Mat to Bitmap
         Bitmap bmp = Bitmap.createBitmap(roi.cols(), roi.rows(), Bitmap.Config.ARGB_8888);
         Utils.matToBitmap(roi, bmp);
 
+        // Run detection
         TensorImage tensorImage = TensorImage.fromBitmap(bmp);
-        List<Classifications> results = classifier.classify(tensorImage);
+        List<Detection> results = detector.detect(tensorImage);
 
         if (results.isEmpty()) {
-            Log.i("[KIBO]", "No classification results.");
+            Log.i("[KIBO]", "No objects detected.");
             return "unknown";
         }
 
-        List<Category> categories = results.get(0).getCategories();
-
-        if (categories.isEmpty()) {
-            Log.i("[KIBO]", "No categories detected.");
-            return "unknown";
+        // Log all detected objects
+        for (Detection detection : results) {
+            List<Category> categories = detection.getCategories();
+            if (!categories.isEmpty()) {
+                Category category = categories.get(0);
+                Log.i("[KIBO]", String.format("Detected %s with score %.2f", category.getLabel(), category.getScore()));
+            }
         }
 
-        for (Category category : categories) {
-            Log.i("[KIBO]", String.format("Detected %s with score %.2f", category.getLabel(), category.getScore()));
+        // Return label of the most confident detection
+        Detection topResult = results.get(0);
+        if (!topResult.getCategories().isEmpty()) {
+            int classIndex = topResult.getCategories().get(0).getIndex();
+            if (classIndex >= 0 && classIndex < labels.size()) {
+                return labels.get(classIndex);
+            } else {
+                return "unknown";
+            }
         }
 
-        return categories.get(0).getLabel();
+        return "unknown";
+    }
+
+    private List<String> loadLabels(Context context) {
+        List<String> labels = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(context.getAssets().open("labels.txt")))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                labels.add(line);
+            }
+        } catch (IOException e) {
+            Log.e("[KIBO]", "Error reading labels.txt", e);
+        }
+        return labels;
     }
 
     private void moveToWithRetry(Point pt, Quaternion qt) {
@@ -241,30 +275,36 @@ public class YourService extends KiboRpcService {
     private Point getAreaPoint(int areaNum) {
         switch (areaNum) {
             case 1:
-                return new Point(10.95, -10.58, 5.20);
+                // Slightly safer z-value to ensure within 4.82 - 5.57
+                return new Point(10.95, -10.58, 5.1);
             case 2:
-                return new Point(10.925, -8.875, 3.76203);
+                return new Point(10.925, -8.875, 3.76203);  // center of Area 2
             case 3:
-                return new Point(10.925, -7.925, 3.76093);
+                return new Point(10.925, -7.925, 3.76093);  // center of Area 3
             case 4:
-                return new Point(9.866984, -6.8525, 4.945);
+                return new Point(9.866984, -6.8525, 4.945); // midpoint of z
             default:
-                return new Point(10.95, -10.58, 5.20);
+                return new Point(10.95, -10.58, 5.1);
         }
     }
 
     private Quaternion getAreaQuat(int areaNum) {
         switch (areaNum) {
             case 1:
+                // No rotation to avoid exceeding Y-plane
+                return quat(0f, 1f); // identity quaternion: x=0, y=0, z=0, w=1
             case 2:
             case 3:
+                // Face along Y axis: 90° around Z-axis
                 return quat(-0.707f, 0.707f);
             case 4:
+                // Face along X axis (identity)
                 return quat(1f, 0f);
             default:
-                return quat(-0.707f, 0.707f);
+                return quat(0f, 1f);
         }
     }
+
 
     private Quaternion quat(float z, float w) {
         return new Quaternion(0f, 0f, z, w);
