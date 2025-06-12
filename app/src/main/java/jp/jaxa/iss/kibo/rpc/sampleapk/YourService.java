@@ -275,8 +275,8 @@ public class YourService extends KiboRpcService {
     private Point getAreaPoint(int areaNum) {
         switch (areaNum) {
             case 1:
-                // Slightly safer z-value to ensure within 4.82 - 5.57
-                return new Point(10.95, -10.58, 5.1);
+                // Edit: 1st point follows the sample code which kinda worked, think its optimal, 10.95, -10.58, 5.1 didnt work
+                return new Point(11.143, -6.7607, 4.9654);
             case 2:
                 return new Point(10.925, -8.875, 3.76203);  // center of Area 2
             case 3:
