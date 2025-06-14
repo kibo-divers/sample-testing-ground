@@ -275,39 +275,34 @@ public class YourService extends KiboRpcService {
     private Point getAreaPoint(int areaNum) {
         switch (areaNum) {
             case 1:
-                // Area 1 (along Y-plane), AR tags face +Y direction (wall is at y = -10.58)
-                return new Point(11.4, -9.7, 5.2); // 18cm offset from wall, optimal for AR tag detection
+                return new Point(11.4, -9.806, 5.195); // no movement within y-axis from dock, x and z center of Area 1
             case 2:
-                // Area 2 (on Z-plane), wall is at z = 3.76203. Approach from Z+ (backward)
-                return new Point(11.0, -8.875, 3.95); // Stay ~18cm out along Z
+                return new Point(11.1, -8.875, 4.461);  // 0.7 from center of area 2 + adjusted a bit
             case 3:
-                // Area 3 (also Z-plane)
-                return new Point(10.9, -7.925, 3.95); // Offset along Z+
+                return new Point(11, -7.625, 4.461);  // 0.7 from center of area 3 + adjusted a bit
             case 4:
-                // Area 4 (wall at x = 9.866984), approach from X+
-                return new Point(10.05, -6.85, 5.0); // Offset along +X
+                return new Point(11.117, -6.852, 4.945); // 0.8 from center of area 4
             default:
-                // Fallback/Area 1 as default
-                return new Point(10.95, -10.40, 5.2);
+                return new Point(10.95, -10.58, 5.1);
         }
     }
-
 
     private Quaternion getAreaQuat(int areaNum) {
         switch (areaNum) {
             case 1:
-                // Face along +Y (rotate 90° around Z)
-                return new Quaternion(0.4f, -0.4f, -0.57f, 0.59f);
+                // 90 deg about +z axis
+                return new Quaternion(0f, 0f, 0.707f, -0.707f);
             case 2:
+                // 90 deg about -y axis
+                return new Quaternion(0f, -0.707f, 0f, -0.707f);
             case 3:
-                // Face along -Z (rotate 180° around Y)
-                return new Quaternion(0f, 1f, 0f, 0f); // (yaw = +180°)
+                // 90 deg about -y axis
+                return new Quaternion(0f, -0.707f, 0f, -0.707f);
             case 4:
-                // Face along -X (rotate 180° around Z)
+                // 180 deg about +z axis
                 return new Quaternion(0f, 0f, 1f, 0f);
             default:
-                // Default orientation (identity)
-                return new Quaternion(0f, 0f, 0f, 1f);
+                return new Quaternion(0f, 0f, 1f, 0f);
         }
     }
 
