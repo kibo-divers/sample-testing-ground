@@ -64,11 +64,11 @@ public class YourService extends KiboRpcService {
             Mat sharp = sharpenImg(undist);
             Mat roi = detectAndCropWithArUco(sharp, areaNum);
 
-            String recognized = recognizeObject(roi, areaNum);
-            Log.i("[KIBO]", "✓ Area " + areaNum + " detected item: " + recognized);
-
-            itemLocationMap.put(recognized, areaNum);
-            api.setAreaInfo(areaNum, recognized, 1);
+//            String recognized = recognizeObject(roi, areaNum);
+//            Log.i("[KIBO]", "✓ Area " + areaNum + " detected item: " + recognized);
+//
+//            itemLocationMap.put(recognized, areaNum);
+//            api.setAreaInfo(areaNum, recognized, 1);
         }
 
         Log.i("[KIBO]", "==== Detecting Clue Item ====");
@@ -277,7 +277,7 @@ public class YourService extends KiboRpcService {
             case 1:
                 return new Point(11.4, -9.806, 5.195); // no movement within y-axis from dock, x and z center of Area 1
             case 2:
-                return new Point(11.1, -8.875, 4.461);  // 0.7 from center of area 2 + adjusted a bit
+                return new Point(11, -9, 4.461);  // 0.7 from center of area 2 + adjusted a bit
             case 3:
                 return new Point(11, -7.625, 4.461);  // 0.7 from center of area 3 + adjusted a bit
             case 4:
@@ -294,7 +294,7 @@ public class YourService extends KiboRpcService {
                 return new Quaternion(0f, 0f, 0.707f, -0.707f);
             case 2:
                 // 90 deg about -y axis
-                return new Quaternion(0f, -0.707f, 0f, -0.707f);
+                return new Quaternion(0f, -0.683f, -0.183f, -0.707f);
             case 3:
                 // 90 deg about -y axis
                 return new Quaternion(0f, -0.707f, 0f, -0.707f);
@@ -305,7 +305,6 @@ public class YourService extends KiboRpcService {
                 return new Quaternion(0f, 0f, 1f, 0f);
         }
     }
-
 
 
     private Quaternion quat(float z, float w) {
