@@ -64,11 +64,10 @@ public class YourService extends KiboRpcService {
             Mat sharp = sharpenImg(undist);
             Mat roi = detectAndCropWithArUco(sharp, areaNum);
 
-//            String recognized = recognizeObject(roi, areaNum);
-//            Log.i("[KIBO]", "✓ Area " + areaNum + " detected item: " + recognized);
-//
-//            itemLocationMap.put(recognized, areaNum);
-//            api.setAreaInfo(areaNum, recognized, 1);
+           String recognized = recognizeObject(roi, areaNum);
+           Log.i("[KIBO]", "✓ Area " + areaNum + " detected item: " + recognized);
+           itemLocationMap.put(recognized, areaNum);
+           api.setAreaInfo(areaNum, recognized, 1);
         }
 
         Log.i("[KIBO]", "==== Detecting Clue Item ====");

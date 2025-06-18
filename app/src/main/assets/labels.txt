@@ -1,10 +1,11 @@
+ar_tag
 coin	
 compass	
 coral	
 crystal	
 diamond	
 emerald	
-fossil	
+fossil
 key	
 letter	
 shell	
