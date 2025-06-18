@@ -31,6 +31,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,6 @@ public class YourService extends KiboRpcService {
     private final int AREA_COUNT = 4;
     private Map<String, Integer> itemLocationMap = new HashMap<>();
     private List<String> labels;
-    private int[] modelInputShape;
 
     @Override
     protected void runPlan1() {
@@ -87,6 +87,8 @@ public class YourService extends KiboRpcService {
         api.notifyRecognitionItem();
 
         try {
+            moveToWithRetry(getAreaPoint(-1), getAreaQuat(-1));
+
             Mat raw = captureNavCam(-1);
             Mat undist = undistort(raw);
             Mat sharp = sharpenImg(undist);
@@ -150,98 +152,44 @@ public class YourService extends KiboRpcService {
     }
 
     private String recognizeObject(Mat roi, int areaNum) {
-        // 1. Validate prerequisites with early returns
-        if (roi == null || roi.empty()) {
-            Log.e(TAG, "❌ Empty input for area " + areaNum);
-            return "unknown";
-        }
         if (detector == null) {
-            Log.e(TAG, "❌ Detector not initialized");
+            Log.e(TAG, "Object detector not initialized.");
+            return "none";
+        }
+
+        // Convert Mat to Bitmap
+        Bitmap bitmap = Bitmap.createBitmap(roi.cols(), roi.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(roi, bitmap);
+
+        Log.i(TAG, "converted to bitmap");
+
+        // Convert Bitmap to TensorImage
+        TensorImage tensorImage = TensorImage.fromBitmap(bitmap);
+
+        Log.i(TAG, "converted to tensorimage");
+
+        // Run inference
+        List<Detection> results = detector.detect(tensorImage);
+
+        Log.i(TAG, "ran inference");
+
+        if (results.isEmpty()) {
+            Log.i(TAG, "Area " + areaNum + " → No object detected.");
+            return "none";
+        }
+
+        Detection topResult = results.get(0);
+        List<Category> categories = topResult.getCategories();
+        if (categories == null || categories.isEmpty()) {
             return "unknown";
         }
-        if (labels == null || labels.isEmpty()) {
-            Log.e(TAG, "❌ Labels not loaded (count: " + (labels != null ? labels.size() : 0) + ")");
-            return "unknown";
-        }
 
-        Mat processedRoi = new Mat();
-        Bitmap bmp = null;
-        String result = "unknown";
+        Category topCategory = categories.get(0);
+        String label = topCategory.getLabel();
+        float score = topCategory.getScore();
 
-        try {
-            // 2. Image conversion pipeline
-            Log.i(TAG, String.format("Input: %s %dx%d ch:%d",
-                    CvType.typeToString(roi.type()),
-                    roi.width(), roi.height(), roi.channels()));
-
-            // Convert to 3-channel RGB
-            switch (roi.channels()) {
-                case 1: Imgproc.cvtColor(roi, processedRoi, Imgproc.COLOR_GRAY2RGB); break;
-                case 4: Imgproc.cvtColor(roi, processedRoi, Imgproc.COLOR_RGBA2RGB); break;
-                default: roi.copyTo(processedRoi);
-            }
-
-            // Resize to model input dimensions
-            if (modelInputShape != null && modelInputShape.length >= 4) {
-                Size targetSize = new Size(modelInputShape[2], modelInputShape[1]);
-                if (processedRoi.size().width != targetSize.width ||
-                        processedRoi.size().height != targetSize.height) {
-                    Imgproc.resize(processedRoi, processedRoi, targetSize);
-                }
-            }
-
-            // Ensure correct type for bitmap conversion
-            if (processedRoi.type() != CvType.CV_8UC3 && processedRoi.type() != CvType.CV_8UC4) {
-                processedRoi.convertTo(processedRoi, CvType.CV_8UC3);
-            }
-
-            // Convert to Bitmap with validation
-            bmp = Bitmap.createBitmap(processedRoi.cols(), processedRoi.rows(), Bitmap.Config.ARGB_8888);
-            Utils.matToBitmap(processedRoi, bmp);
-            if (bmp == null || bmp.getWidth() <= 0 || bmp.getHeight() <= 0) {
-                throw new IllegalStateException("Invalid bitmap created");
-            }
-
-            // 3. Object detection
-            TensorImage tensorImage = TensorImage.fromBitmap(bmp);
-            List<Detection> results = detector.detect(tensorImage);
-
-            if (results != null && !results.isEmpty()) {
-                Detection topDetection = results.get(0);
-                if (!topDetection.getCategories().isEmpty()) {
-                    Category topCategory = topDetection.getCategories().get(0);
-
-                    // Debug output
-                    Log.i(TAG, String.format("Detection: %s (%.2f) idx:%d/%d",
-                            topCategory.getLabel(),
-                            topCategory.getScore(),
-                            topCategory.getIndex(),
-                            labels.size()));
-
-                    // Validate and return result
-                    if (topCategory.getScore() >= 0.5f) {
-                        int idx = topCategory.getIndex();
-                        if (idx >= 0 && idx < labels.size()) {
-                            result = labels.get(idx);
-                        } else {
-                            Log.w(TAG, "Index out of bounds: " + idx);
-                        }
-                    }
-                }
-            }
-
-        } catch (Exception e) {
-            Log.e(TAG, "❌ Detection crashed for area " + areaNum, e);
-            result = "unknown";
-        } finally {
-            // 4. Resource cleanup
-            processedRoi.release();
-            if (bmp != null && !bmp.isRecycled()) {
-                bmp.recycle();
-            }
-        }
-
-        return result;
+        Log.i(TAG, String.format("Detected: %s (%.2f)", label, score));
+        return label;
     }
 
     private List<String> loadLabels(Context context) {
@@ -367,16 +315,36 @@ public class YourService extends KiboRpcService {
 
             Mat markerCorners = corners.get(0);
             Mat srcPts = new Mat(4, 1, CvType.CV_32FC2);
+            Mat srcPts2 = new Mat(4, 1, CvType.CV_32FC2);
             markerCorners.convertTo(srcPts, CvType.CV_32FC2);
+//            Log.i(TAG, arrayToString(srcPts.get(0,0)));
+//            Log.i(TAG, arrayToString(srcPts.get(0,1)));
+//            Log.i(TAG, arrayToString(srcPts.get(0,2)));
+//            Log.i(TAG, arrayToString(srcPts.get(0,3)));
+            double centerx = 0;
+            double centery = 0;
+            centerx = (srcPts.get(0, 0)[0]+srcPts.get(0, 1)[0]+srcPts.get(0, 2)[0]+srcPts.get(0, 3)[0])/4d;
+            centery = (srcPts.get(0, 0)[1]+srcPts.get(0, 1)[1]+srcPts.get(0, 2)[1]+srcPts.get(0, 3)[1])/4d;
+            Log.i(TAG, "acquired center of corners: (" + centerx + ", " + centery + ")");
+            srcPts2.put(0, 0, ((srcPts.get(0, 0)[0]-centerx)*10d)+centerx, ((srcPts.get(0, 0)[1]-centery)*10d)+centery);
+            srcPts2.put(1, 0, ((srcPts.get(0, 1)[0]-centerx)*10d)+centerx, ((srcPts.get(0, 1)[1]-centery)*10d)+centery);
+            srcPts2.put(2, 0, ((srcPts.get(0, 2)[0]-centerx)*10d)+centerx, ((srcPts.get(0, 2)[1]-centery)*10d)+centery);
+            srcPts2.put(3, 0, ((srcPts.get(0, 3)[0]-centerx)*10d)+centerx, ((srcPts.get(0, 3)[1]-centery)*10d)+centery);
+
+//            Log.i(TAG, arrayToString(srcPts2.get(0,0)));
+//            Log.i(TAG, arrayToString(srcPts2.get(1,0)));
+//            Log.i(TAG, arrayToString(srcPts2.get(2,0)));
+//            Log.i(TAG, arrayToString(srcPts2.get(3,0)));
+//            Log.i(TAG, "enlargened the aruco thing by a factor of 10");
 
             Mat dstPts = new Mat(4, 1, CvType.CV_32FC2);
             dstPts.put(0, 0,
-                    0, 0,
-                    223, 0,
-                    223, 223,
-                    0, 223);
+                    0, -500,
+                    723, -500,
+                    723, 723,
+                    0, 723);
 
-            Mat h = Imgproc.getPerspectiveTransform(srcPts, dstPts);
+            Mat h = Imgproc.getPerspectiveTransform(srcPts2, dstPts);
             Mat roi = new Mat();
             Imgproc.warpPerspective(img, roi, h, new Size(512, 512));
 
@@ -388,28 +356,48 @@ public class YourService extends KiboRpcService {
             return img.clone();
         }
     }
-
     private Point getAreaPoint(int areaNum) {
         switch (areaNum) {
-            case 1: return new Point(11.4, -9.806, 5.195);
-            case 2: return new Point(11, -9, 4.461);
-            case 3: return new Point(11, -7.625, 4.461);
-            case 4: return new Point(11.117, -6.852, 4.945);
-            default: return new Point(10.95, -10.58, 5.1);
+            case 1:
+                return new Point(11.4, -9.806, 5.195); // no movement within y-axis from dock, x and z center of Area 1
+            case 2:
+                return new Point(10.9, -9, 4.461);  // 0.7 from center of area 2 + adjusted a bit
+            case 3:
+                return new Point(10.9, -7.625, 4.461);  // 0.7 from center of area 3 + adjusted a bit
+            case 4:
+                return new Point(11.117, -6.852, 4.945); // 0.8 from center of area 4
+            case -1:
+                // astronaut
+                return new Point(11.593, -7.0107, 4.9654); // 0.25 from astronaut
+            default:
+                return new Point(10.95, -10.58, 5.1);
         }
     }
 
     private Quaternion getAreaQuat(int areaNum) {
         switch (areaNum) {
-            case 1: return new Quaternion(0f, 0f, 0.707f, -0.707f);
-            case 2: return new Quaternion(0f, -0.683f, -0.183f, -0.707f);
-            case 3: return new Quaternion(0f, -0.707f, 0f, -0.707f);
-            case 4: return new Quaternion(0f, 0f, 1f, 0f);
-            default: return new Quaternion(0f, 0f, 1f, 0f);
+            case 1:
+                // 90 deg about +z axis
+                return new Quaternion(0f, 0f, 0.707f, -0.707f);
+            case 2:
+                // 90 deg about -y axis
+                return new Quaternion(0f, -0.683f, -0.183f, -0.707f);
+            case 3:
+                // 90 deg about -y axis
+                return new Quaternion(0f, -0.707f, 0f, -0.707f);
+            case 4:
+                // 180 deg about +z axis
+                return new Quaternion(0f, 0f, 1f, 0f);
+            case -1:
+                // astronaut
+                // -90 deg about +z axis
+                return new Quaternion(0f, 0f, 0.707f, 0.707f);
+            default:
+                return new Quaternion(0f, 0f, 1f, 0f);
         }
     }
 
-    private String arrayToString(int[] array) {
+    private String arrayToString(double[] array) {
         if (array == null) return "null";
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < array.length; i++) {
@@ -447,4 +435,5 @@ public class YourService extends KiboRpcService {
             return null;
         }
     }
+
 }
