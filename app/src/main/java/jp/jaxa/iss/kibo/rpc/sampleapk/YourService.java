@@ -64,7 +64,7 @@ public class YourService extends KiboRpcService {
             Mat sharp = sharpenImg(undist);
             Mat roi = detectAndCropWithArUco(sharp, areaNum);
 
-           String recognized = recognizeObject(roi, areaNum);
+           String recognized = recognizeObject(sharp, areaNum);
            Log.i("[KIBO]", "✓ Area " + areaNum + " detected item: " + recognized);
            itemLocationMap.put(recognized, areaNum);
            api.setAreaInfo(areaNum, recognized, 1);
@@ -78,7 +78,7 @@ public class YourService extends KiboRpcService {
         Mat sharp = sharpenImg(undist);
         Mat roi = detectAndCropWithArUco(sharp, -1);
 
-        String targetItem = recognizeObject(roi, -1);
+        String targetItem = recognizeObject(sharp, -1);
         Log.i("[KIBO]", "🎯 Clue Object: " + targetItem);
 
         int targetArea = itemLocationMap.getOrDefault(targetItem, -1);
@@ -137,7 +137,7 @@ public class YourService extends KiboRpcService {
 
     private String recognizeObject(Mat roi, int areaNum) {
         Log.i("[KIBO]", "Running object detection for area: " + areaNum);
-        api.saveMatImage(roi, "area" + areaNum + "_final_input.png");
+        api.saveMatImage(roi, "area" + areaNum + "raw.png");
 
         if (detector == null) {
             Log.e("[KIBO]", "❌ ObjectDetector is null. Skipping detection.");
@@ -264,7 +264,7 @@ public class YourService extends KiboRpcService {
 
         Mat h = Imgproc.getPerspectiveTransform(srcPts, dstPts);
         Mat roi = new Mat();
-        Imgproc.warpPerspective(img, roi, h, new Size(224, 224));
+        Imgproc.warpPerspective(img, roi, h, new Size(512, 512));
 
         api.saveMatImage(roi, "area" + areaNum + "_roi.png");
         Log.i("[KIBO]", "✓ ROI cropped with ARUco guidance");
