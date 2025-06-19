@@ -10,9 +10,18 @@ import org.opencv.aruco.Dictionary;
 import org.opencv.calib3d.Calib3d;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
+import org.opencv.core.MatOfFloat;
+import org.opencv.core.MatOfInt;
+import org.opencv.core.MatOfRect;
+import org.opencv.core.MatOfRect2d;
+import org.opencv.core.Rect;
+import org.opencv.core.Rect2d;
 import org.opencv.core.Size;
+import org.opencv.dnn.Dnn;
 import org.opencv.imgproc.Imgproc;
 
+import org.tensorflow.lite.Interpreter;
+import org.tensorflow.lite.support.common.FileUtil;
 import org.tensorflow.lite.support.image.TensorImage;
 import org.tensorflow.lite.task.vision.detector.Detection;
 import org.tensorflow.lite.task.vision.detector.ObjectDetector;
@@ -31,6 +40,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.MappedByteBuffer;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -41,8 +51,12 @@ public class YourService extends KiboRpcService {
     private static final String TAG = "[KIBO]";
     private ObjectDetector detector;
     private final int AREA_COUNT = 4;
+    private final int NUM_BOXES = 300;
+    private final float CONFIDENCE_THRESHOLD = 0.5f;
+    private final float NMS_THRESHOLD = 0.5f;
     private Map<String, Integer> itemLocationMap = new HashMap<>();
     private List<String> labels;
+    private Interpreter tflite;
 
     @Override
     protected void runPlan1() {
@@ -120,11 +134,12 @@ public class YourService extends KiboRpcService {
 
     private void loadModel() {
         try {
-            File modelFile = new File(getApplicationContext().getCacheDir(), "model.tflite");
+            File modelFile = new File(getApplicationContext().getCacheDir(), "best_float32.tflite");
 
+            // Copy model to cache if it doesn't exist
             if (!modelFile.exists()) {
                 Log.i(TAG, "Copying model from assets to cache");
-                try (InputStream is = getApplicationContext().getAssets().open("model.tflite");
+                try (InputStream is = getApplicationContext().getAssets().open("best_float32.tflite");
                      FileOutputStream fos = new FileOutputStream(modelFile)) {
                     byte[] buffer = new byte[1024];
                     int read;
@@ -135,62 +150,195 @@ public class YourService extends KiboRpcService {
                 }
             }
 
-            ObjectDetectorOptions options = ObjectDetectorOptions.builder()
-                    .setMaxResults(5)
-                    .setScoreThreshold(0.5f)
-                    .build();
-
-            detector = ObjectDetector.createFromFileAndOptions(modelFile, options);
-
             labels = loadLabels(getApplicationContext());
-            Log.i(TAG, "Loaded " + labels.size() + " labels");
 
-        } catch (IOException | IllegalStateException | IllegalArgumentException e) {
-            Log.e(TAG, "❌ Failed to load object detection model", e);
-            detector = null;
+            // Create Interpreter.Options if needed
+            Interpreter.Options options = new Interpreter.Options();
+            options.setNumThreads(4); // optional: tune this for performance
+
+            // Load the model file using FileUtil
+            MappedByteBuffer tfliteModel = FileUtil.loadMappedFile(getApplicationContext(), modelFile.getAbsolutePath());
+
+            // Instantiate the TFLite Interpreter
+            tflite = new Interpreter(tfliteModel, options);
+
+            Log.i(TAG, "✅ Interpreter initialized successfully");
+
+        } catch (IOException | IllegalArgumentException e) {
+            Log.e(TAG, "❌ Failed to load TFLite model", e);
+            tflite = null;
         }
+    }
+
+    public Map<String, Object> runInference(Bitmap bitmap) {
+        float[][][][] input = preprocessImage(bitmap);
+
+        // Model output: [1, 300, 6] => [ymin, xmin, ymax, xmax, score, class]
+        float[][][] output = new float[1][300][6];
+        tflite.run(input, output);
+
+        List<float[]> boxes = new ArrayList<>();
+        List<Float> scores = new ArrayList<>();
+        List<Integer> classes = new ArrayList<>();
+
+        // Step 1: Extract predictions above threshold
+        for (int i = 0; i < 300; i++) {
+            float score = output[0][i][4];
+            if (score > 0.5f) {
+                float[] box = Arrays.copyOfRange(output[0][i], 0, 4); // [ymin, xmin, ymax, xmax]
+                boxes.add(box);
+                scores.add(score);
+                classes.add((int) output[0][i][5]); // Adjust if needed: +1 for 1-based labels
+            }
+        }
+
+        // Step 2: Prepare detections for NMS: [ymin, xmin, ymax, xmax, score, class_id]
+        List<float[]> detections = new ArrayList<>();
+        for (int i = 0; i < boxes.size(); i++) {
+            float[] box = boxes.get(i);
+            float score = scores.get(i);
+            int cls = classes.get(i);
+            detections.add(new float[] { box[0], box[1], box[2], box[3], score, cls });
+        }
+
+        // Step 3: Apply Non-Maximum Suppression (returns list of indices)
+        List<Integer> nmsIndices = nonMaxSuppressionIndices(detections, 0.5f); // IoU threshold
+
+        // Step 4: Gather final filtered results
+        List<float[]> finalBoxes = new ArrayList<>();
+        List<Float> finalScores = new ArrayList<>();
+        List<Integer> finalClasses = new ArrayList<>();
+
+        for (int idx : nmsIndices) {
+            finalBoxes.add(boxes.get(idx));
+            finalScores.add(scores.get(idx));
+            finalClasses.add(classes.get(idx));
+        }
+
+        // Step 5: Prepare result map
+        Map<String, Object> result = new HashMap<>();
+        result.put("detection_boxes", finalBoxes);
+        result.put("detection_scores", finalScores);
+        result.put("detection_classes", finalClasses);
+        result.put("num_detections", finalBoxes.size());
+
+        return result;
+    }
+
+    private List<Integer> nonMaxSuppressionIndices(List<float[]> detections, float iouThreshold) {
+        List<Integer> keptIndices = new ArrayList<>();
+
+        // Sort detections by score (descending)
+        for (int i = 0; i < detections.size() - 1; i++) {
+            for (int j = i + 1; j < detections.size(); j++) {
+                if (detections.get(j)[4] > detections.get(i)[4]) {
+                    float[] temp = detections.get(i);
+                    detections.set(i, detections.get(j));
+                    detections.set(j, temp);
+                }
+            }
+        }
+
+        boolean[] removed = new boolean[detections.size()];
+
+        for (int i = 0; i < detections.size(); i++) {
+            if (removed[i]) continue;
+
+            keptIndices.add(i);
+            float[] a = detections.get(i);
+
+            for (int j = i + 1; j < detections.size(); j++) {
+                if (removed[j]) continue;
+
+                float[] b = detections.get(j);
+                if ((int) a[5] != (int) b[5]) continue;  // Only suppress same class
+
+                float iou = iou(a, b);
+                if (iou > iouThreshold) {
+                    removed[j] = true;
+                }
+            }
+        }
+
+        return keptIndices;
+    }
+
+    private float[][][][] preprocessImage(Bitmap bitmap) {
+        Bitmap resized = Bitmap.createScaledBitmap(bitmap, 512, 512, true);
+
+        float[][][][] input = new float[1][512][512][3];
+        for (int y = 0; y < 512; y++) {
+            for (int x = 0; x < 512; x++) {
+                int pixel = resized.getPixel(x, y);
+                input[0][y][x][0] = ((pixel >> 16) & 0xFF) / 255.0f;  // R
+                input[0][y][x][1] = ((pixel >> 8 ) & 0xFF) / 255.0f;   // G
+                input[0][y][x][2] = (pixel & 0xFF) / 255.0f;          // B
+            }
+        }
+        return input;
+    }
+
+
+    private float iou(float[] boxA, float[] boxB) {
+        float yA = Math.max(boxA[0], boxB[0]);
+        float xA = Math.max(boxA[1], boxB[1]);
+        float yB = Math.min(boxA[2], boxB[2]);
+        float xB = Math.min(boxA[3], boxB[3]);
+
+        float interArea = Math.max(0, yB - yA) * Math.max(0, xB - xA);
+        float boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1]);
+        float boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1]);
+
+        return interArea / (boxAArea + boxBArea - interArea);
     }
 
     private String recognizeObject(Mat roi, int areaNum) {
-        if (detector == null) {
-            Log.e(TAG, "Object detector not initialized.");
-            return "none";
-        }
-
-        // Convert Mat to Bitmap
-        Bitmap bitmap = Bitmap.createBitmap(roi.cols(), roi.rows(), Bitmap.Config.ARGB_8888);
-        Utils.matToBitmap(roi, bitmap);
-
-        Log.i(TAG, "converted to bitmap");
-
-        // Convert Bitmap to TensorImage
-        TensorImage tensorImage = TensorImage.fromBitmap(bitmap);
-
-        Log.i(TAG, "converted to tensorimage");
-
-        // Run inference
-        List<Detection> results = detector.detect(tensorImage);
-
-        Log.i(TAG, "ran inference");
-
-        if (results.isEmpty()) {
-            Log.i(TAG, "Area " + areaNum + " → No object detected.");
-            return "none";
-        }
-
-        Detection topResult = results.get(0);
-        List<Category> categories = topResult.getCategories();
-        if (categories == null || categories.isEmpty()) {
+        if (roi == null || roi.empty()) {
+            Log.e(TAG, "❌ Empty input for area " + areaNum);
             return "unknown";
         }
 
-        Category topCategory = categories.get(0);
-        String label = topCategory.getLabel();
-        float score = topCategory.getScore();
+        try {
 
-        Log.i(TAG, String.format("Detected: %s (%.2f)", label, score));
-        return label;
+            // Preprocess image to match input size
+            Mat processed = new Mat();
+            switch (roi.channels()) {
+                case 1: Imgproc.cvtColor(roi, processed, Imgproc.COLOR_GRAY2RGB); break;
+                case 4: Imgproc.cvtColor(roi, processed, Imgproc.COLOR_RGBA2RGB); break;
+                default: roi.copyTo(processed); break;
+            }
+
+            Imgproc.resize(processed, processed, new Size(512, 512)); // match model input
+            Bitmap bmp = Bitmap.createBitmap(processed.cols(), processed.rows(), Bitmap.Config.ARGB_8888);
+            Utils.matToBitmap(processed, bmp);
+
+            // Run inference
+            Map<String, Object> result = runInference(bmp);
+
+            List<Integer> classes = (List<Integer>) result.get("detection_classes");
+            List<Float> scores = (List<Float>) result.get("detection_scores");
+
+            if (classes != null && !classes.isEmpty() && scores != null && !scores.isEmpty()) {
+                int topClassId = classes.get(0);
+                float topScore = scores.get(0);
+
+                if (topScore >= 0.5f && topClassId < labels.size()) {
+                    String label = labels.get(topClassId);
+                    Log.i(TAG, String.format("Detection: %s (%.2f)", label, topScore));
+                    return label;
+                }
+            } else {
+                Log.i(TAG, "No confident detections in area " + areaNum);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Detection crashed for area " + areaNum, e);
+        }
+
+        return "unknown";
     }
+
+
 
     private List<String> loadLabels(Context context) {
         List<String> labels = new ArrayList<>();
@@ -356,6 +504,7 @@ public class YourService extends KiboRpcService {
             return img.clone();
         }
     }
+
     private Point getAreaPoint(int areaNum) {
         switch (areaNum) {
             case 1:
